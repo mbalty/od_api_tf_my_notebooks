@@ -8,6 +8,7 @@ from keras.applications.vgg16 import VGG16
 from keras.models import Model, Sequential
 from keras.layers import Concatenate, Dense, Input, Conv2D, Lambda, MaxPool2D, Flatten
 import keras.backend as K
+import tensorflow as tf
 import cv2
 
 def euclidean_distance(vects):
@@ -61,14 +62,19 @@ class DetectionHistory():
         self.boxes = []
         self.image_patches = []
         self.statuses = []
+        self.scores = []
 
+    def add(self, box, patch, status, score):
+        self.boxes.append(box)
+        self.image_patches.append(patch)
+        self.statuses.append(status)
+        self.scores.append(score)
 
 class ChangeStatus(Enum):
     ADD = 1
-    SAME = 2
-    REMOVE = 3
-    MOVE = 4
-
+    SAME = 4
+    REMOVE = 2
+    MOVE = 3
 
 class SimilarityModel():
     def __init__(self, keras_model_path = None):
@@ -101,167 +107,119 @@ def mean(numbers):
     return float(sum(numbers)) / max(len(numbers), 1)
 
 class ChangeTracker():
-    def __init__(self, maxDisappeared=1000000000000000000, iou_thresh = 0.6, similarity_tresh=0.5):
-        # initialize the next unique object ID along with two ordered
-        # dictionaries used to keep track of mapping a given object
-        # ID to its centroid and number of consecutive frames it has
-        # been marked as "disappeared", respectively
+    is_initalized = False
+    def __init__(self, maxDisappeared=100000000000000, iou_thresh = .3, similarity_tresh=0.3, past_similarity=3):
         self.nextObjectID = 0
         self.objects = OrderedDict()
         self.disappeared = OrderedDict()
         self.removedObjects = OrderedDict()
-        self.pastSimilarity = 1
+        self.pastSimilarity = past_similarity
         self.imageSimilarity = SimilarityModel(
             keras_model_path =
-            "/home/wc-gpu/MasterThesis/models/research/object_detection/od_api_tf_my_notebooks/checkpoint_similar/keep/2019-05-01weights-epoch08-val_acc0.91-val_loss0.10_fixed_val.hdf5") 
-
-        # store the number of maximum consecutive frames a given
-        # object is allowed to be marked as "disappeared" until we
-        # need to deregister the object from tracking
+            "/home/wc-gpu/MasterThesis/models/research/object_detection/od_api_tf_my_notebooks/checkpoint_similar/keep/2019-05-06weights-epoch57-val_acc0.83-val_loss0.14_l2.hdf5")  \
+                if ChangeTracker.is_initalized is False else self.imageSimilarity
         self.maxDisappeared = maxDisappeared
         self.iouThresh = iou_thresh
-        self.distThresh = similarity_tresh
-        self.detectionHistory = list()
+        self.similarityThresh = similarity_tresh
+        self.detectionHistory = dict(boxes=[], classes=[], ids=[])
+        ChangeTracker.is_initalized = True
+
+    def reset(self):
+        ChangeTracker.__init__(self, self.maxDisappeared, self.iouThresh, self.similarityThresh)
 
     def register(self, box, image):
         # when registering an object we use the next available object
         # ID to store the centroid
         
         history = DetectionHistory(self.nextObjectID)
-        history.boxes.append(box)
-        history.image_patches.append(crop(image, box))
-        history.statuses.append(ChangeStatus.ADD)
-
+        history.add(box, crop(image, box), ChangeStatus.ADD, 0)
         self.objects[self.nextObjectID] = history
         
         self.disappeared[self.nextObjectID] = 0
+        self.addDetection(box, ChangeStatus.ADD, self.nextObjectID)
         self.nextObjectID += 1
-        self.detectionHistory[-1].append(box)
 
-    def track(self, id, box, image, status=ChangeStatus.SAME):
-        history = self.objects[id]
-        history.boxes.append(box)
-        history.image_patches.append(crop(image, box))
-        history.statuses.append(status)
+    def addDetection(self, box, status, objectID):
+        self.detectionHistory["boxes"][-1].append(box)
+        self.detectionHistory["classes"][-1].append(status.value)
+        self.detectionHistory["ids"][-1].append(objectID)
+
+    def track(self, objectID, box, image, status=ChangeStatus.SAME, score=0): 
+        history = self.objects[objectID]
+        history.add(box, crop(image, box), status, score)
+
         self.disappeared[self.nextObjectID] = 0
+        self.addDetection(box, status, objectID)
 
     def remove(self, objectID):
         history = self.objects[objectID]
         history.statuses.append(ChangeStatus.REMOVE)
         self.disappeared[objectID] += 1
+        if history.statuses[-2] != ChangeStatus.REMOVE:
+            self.addDetection(history.boxes[-1], ChangeStatus.REMOVE, objectID)
 
         if self.disappeared[objectID] > self.maxDisappeared:
             self.deregister(objectID)
 
     def deregister(self, objectID):
-        # to deregister an object ID we delete the object ID from
-        # both of our respective dictionaries
         self.removedObjects[objectID] = self.objects[objectID]
         del self.objects[objectID]
         del self.disappeared[objectID]
 
     def img_patch_similarity(self, box, image, id):
         cropped = crop(image, box)
-        return mean([self.imageSimilarity(cropped, patch) for patch in self.objects[id].image_patches[-self.pastSimilarity:]])
+        patches = self.objects[id].image_patches
+        if self.pastSimilarity < len(patches):
+            patches = patches[-self.pastSimilarity:]
+        return mean([self.imageSimilarity(cropped, patch) for patch in patches])
 
     def update(self, boxes, image=None):
-        self.detectionHistory.append([])
-        # check to see if the list of input bounding box rectangles
-        # is empty
+        self.detectionHistory["boxes"].append([])
+        self.detectionHistory["classes"].append([])
+        self.detectionHistory["ids"].append([])
+
+
         if len(boxes) == 0:
-            # loop over any existing tracked objects and mark them
-            # as disappeared
             for objectID in self.disappeared.keys():
                 self.disappeared[objectID] += 1
 
-                # if we have reached a maximum number of consecutive
-                # frames where a given object has been marked as
-                # missing, deregister it
                 if self.disappeared[objectID] > self.maxDisappeared:
                     self.deregister(objectID)
 
-            # return early as there are no centroids or tracking info
-            # to update
             return self.objects
 
-        # initialize an array of input centroids for the current frame
-        boxes = boxes # np.array(boxes, dtype="int")
-
-        # if we are currently not tracking any objects take the input
-        # centroids and register each of them
         if len(self.objects) == 0:
             for i in range(0, len(boxes)):
                 self.register(boxes[i], image)
 
-        # otherwise, are are currently tracking objects so we need to
-        # try to match the input centroids to existing object
-        # centroids
         else:
-            # grab the set of object IDs and corresponding centroids
             objectIDs = np.array(list(self.objects.keys()))
             objectBoxes = np.array(list([a.boxes[-1] for a in self.objects.values()]))
-
-            # compute the distance between each pair of object
-            # centroids and input centroids, respectively -- our
-            # goal will be to match an input centroid to an existing
-            # object centroid
-            # D = dist.cdist(np.array(objectBoxes), boxes)
-
 
             D = np.empty((len(objectBoxes), len(boxes)), dtype=np.float32)
 
             for i in range(len(objectBoxes)):
                 for j in range(len(boxes)):
                     D[i, j] = 1 - iou(objectBoxes[i], boxes[j])
-            # in order to perform this matching we must (1) find the
-            # smallest value in each row and then (2) sort the row
-            # indexes based on their minimum values so that the row
-            # with the smallest value as at the *front* of the index
-            # list
             rows = D.min(axis=1).argsort()
 
-            # next, we perform a similar process on the columns by
-            # finding the smallest value in each column and then
-            # sorting using the previously computed row index list
             cols = D.argmin(axis=1)[rows]
 
-            # in order to determine if we need to update, register,
-            # or deregister an object we need to keep track of which
-            # of the rows and column indexes we have already examined
             usedRows = set()
             usedCols = set()
 
-            # loop over the combination of the (row, column) index
-            # tuples
             for (row, col) in zip(rows, cols):
-                # if we have already examined either the row or
-                # column value before, ignore it
-                # val
                 if row in usedRows or col in usedCols or D[row][col] > self.iouThresh:
                     continue
 
-                # otherwise, grab the object ID for the current row,
-                # set its new centroid, and reset the disappeared
-                # counter
-                
                 objectID = objectIDs[row]
-                self.track(objectID, boxes[col], image)
+                self.track(objectID, boxes[col], image, score=D[row][col])
 
-                # indicate that we have examined each of the row and
-                # column indexes, respectively
                 usedRows.add(row)
                 usedCols.add(col)
 
-            # compute both the row and column index we have NOT yet
-            # examined
             unusedRows = set(range(0, D.shape[0])).difference(usedRows)
             unusedCols = set(range(0, D.shape[1])).difference(usedCols)
-
-            # in the event that the number of object centroids is
-            # equal or greater than the number of input centroids
-            # we need to check and see if some of these objects have
-            # potentially disappeared
-            # loop over the unused row indexes
 
             if len(unusedRows) and len(unusedCols):
                 patchRows = np.array(sorted(list(unusedRows)), dtype=np.int16)
@@ -283,10 +241,10 @@ class ChangeTracker():
                 usedCols = set()
 
                 for (row, col) in zip(rows, cols):
-                    if row in usedRows or col in usedCols or D[row][col] > self.distThresh:
+                    if row in usedRows or col in usedCols or D[row][col] > self.similarityThresh:
                         continue
                     objectID = objectIDs[row]
-                    self.track(objectID, boxes[col], image, ChangeStatus.MOVE)
+                    self.track(objectID, boxes[col], image, ChangeStatus.MOVE, D[row][col])
 
                     usedRows.add(row)
                     usedCols.add(col)
@@ -296,16 +254,10 @@ class ChangeTracker():
 
 
             for row in unusedRows:
-                # grab the object ID for the corresponding row
-                # index and increment the disappeared counter
                 self.remove(objectIDs[row])
 
-            # otherwise, if the number of input centroids is greater
-            # than the number of existing object centroids we need to
-            # register each new input centroid as a trackable object
             for col in unusedCols:
                 self.register(boxes[col], image)
 
-        # return the set of trackable objects
         return self.objects
 

@@ -65,9 +65,9 @@ class DetectionHistory():
 
 class ChangeStatus(Enum):
     ADD = 1
-    SAME = 2
-    REMOVE = 3
-    MOVE = 4
+    SAME = 4
+    REMOVE = 2
+    MOVE = 3
 
 
 class SimilarityModel():
@@ -101,7 +101,7 @@ def mean(numbers):
     return float(sum(numbers)) / max(len(numbers), 1)
 
 class ChangeTracker():
-    def __init__(self, maxDisappeared=1000000000000000000, iou_thresh = 0.6, similarity_tresh=0.5):
+    def __init__(self, maxDisappeared=3, iou_thresh = 0.6, similarity_tresh=0.5):
         # initialize the next unique object ID along with two ordered
         # dictionaries used to keep track of mapping a given object
         # ID to its centroid and number of consecutive frames it has
@@ -121,7 +121,7 @@ class ChangeTracker():
         self.maxDisappeared = maxDisappeared
         self.iouThresh = iou_thresh
         self.distThresh = similarity_tresh
-        self.detectionHistory = list()
+        self.detectionHistory = dict(boxes=[], classes=[])
 
     def register(self, box, image):
         # when registering an object we use the next available object
@@ -136,7 +136,11 @@ class ChangeTracker():
         
         self.disappeared[self.nextObjectID] = 0
         self.nextObjectID += 1
-        self.detectionHistory[-1].append(box)
+        self.addDetection(box, ChangeStatus.ADD)
+
+    def addDetection(self, box, status):
+        self.detectionHistory["boxes"][-1].append(box)
+        self.detectionHistory["classes"][-1].append(int(status))
 
     def track(self, id, box, image, status=ChangeStatus.SAME):
         history = self.objects[id]
@@ -144,11 +148,14 @@ class ChangeTracker():
         history.image_patches.append(crop(image, box))
         history.statuses.append(status)
         self.disappeared[self.nextObjectID] = 0
+        self.addDetection(box, status)
+
 
     def remove(self, objectID):
         history = self.objects[objectID]
         history.statuses.append(ChangeStatus.REMOVE)
         self.disappeared[objectID] += 1
+        self.addDetection(history.boxes[-1], ChangeStatus.REMOVE)
 
         if self.disappeared[objectID] > self.maxDisappeared:
             self.deregister(objectID)
@@ -165,7 +172,9 @@ class ChangeTracker():
         return mean([self.imageSimilarity(cropped, patch) for patch in self.objects[id].image_patches[-self.pastSimilarity:]])
 
     def update(self, boxes, image=None):
-        self.detectionHistory.append([])
+        self.detectionHistory["boxes"].append([])
+        self.detectionHistory["classes"].append([])
+
         # check to see if the list of input bounding box rectangles
         # is empty
         if len(boxes) == 0:
