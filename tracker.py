@@ -55,6 +55,34 @@ def iou(bbox1, bbox2):
 
     return size_intersection / size_union
 
+def sift_sim(img_a, img_b):
+  '''
+  Use SIFT features to measure image similarity
+  @args:
+    {str} path_a: the path to an image file
+    {str} path_b: the path to an image file
+  @returns:
+    TODO
+  '''
+  # initialize the sift feature detector
+  orb = cv2.ORB_create()
+
+  # get the images
+
+  # find the keypoints and descriptors with SIFT
+  kp_a, desc_a = orb.detectAndCompute(img_a, None)
+  kp_b, desc_b = orb.detectAndCompute(img_b, None)
+
+  # initialize the bruteforce matcher
+  bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+
+  # match.distance is a float between {0:100} - lower means more similar
+  matches = bf.match(desc_a, desc_b)
+  similar_regions = [i for i in matches if i.distance < 70]
+  if len(matches) == 0:
+    return 0
+  return 1. - len(similar_regions) / len(matches)
+
 
 class DetectionHistory():
     def __init__(self, identifier):
@@ -80,7 +108,7 @@ class SimilarityModel():
     def __init__(self, keras_model_path = None):
         input_before = Input(shape=(128, 128, 3))
         input_after = Input(shape=(128, 128, 3))
-        mobile = MobileNet(input_shape=(128,128,3), weights="imagenet")
+        mobile = MobileNet(input_shape=(128,128,3), weights=None)
         mobile = Sequential(layers=mobile.layers[2:-5])
         before_feature = mobile(input_before)
         after_feature = mobile(input_after)
@@ -91,8 +119,14 @@ class SimilarityModel():
         self._model.load_weights(keras_model_path)
 
     def __call__(self, first, second): 
-        first = np.expand_dims(cv2.resize(first, (128, 128)), axis=0)
-        second = np.expand_dims(cv2.resize(second, (128, 128)), axis=0)
+        first = cv2.resize(first, (128, 128)).astype(np.float32)
+        second = cv2.resize(second, (128, 128)).astype(np.float32)
+        try:
+            sift_similarity = sift_sim(first[0], second[0])
+        except:
+            sift_similarity = 0.5
+        first = np.expand_dims(first, axis=0)
+        second = np.expand_dims(second, axis=0)
         # first -= np.mean(first, axis = 0)
         # second -= np.mean(second, axis = 0)
         return self._model.predict([first, second])[0]
@@ -108,7 +142,7 @@ def mean(numbers):
 
 class ChangeTracker():
     is_initalized = False
-    def __init__(self, maxDisappeared=100000000000000, iou_thresh = .3, similarity_tresh=0.3, past_similarity=3):
+    def __init__(self, maxDisappeared=3, iou_thresh =.4, similarity_tresh=0.4, past_similarity=3):
         self.nextObjectID = 0
         self.objects = OrderedDict()
         self.disappeared = OrderedDict()
@@ -116,12 +150,14 @@ class ChangeTracker():
         self.pastSimilarity = past_similarity
         self.imageSimilarity = SimilarityModel(
             keras_model_path =
-            "/home/wc-gpu/MasterThesis/models/research/object_detection/od_api_tf_my_notebooks/checkpoint_similar/keep/2019-05-06weights-epoch57-val_acc0.83-val_loss0.14_l2.hdf5")  \
+            "/home/wc-gpu/MasterThesis/models/research/object_detection/od_api_tf_my_notebooks/checkpoint_similar/keep/2019-05-15weights-epoch15-val_acc0.90-val_loss0.02_all_add_l2.hdf5")  \
                 if ChangeTracker.is_initalized is False else self.imageSimilarity
         self.maxDisappeared = maxDisappeared
         self.iouThresh = iou_thresh
         self.similarityThresh = similarity_tresh
         self.detectionHistory = dict(boxes=[], classes=[], ids=[])
+        self.images = []
+
         ChangeTracker.is_initalized = True
 
     def reset(self):
@@ -131,6 +167,8 @@ class ChangeTracker():
         # when registering an object we use the next available object
         # ID to store the centroid
         
+        # if len(self.images) and self.imageSimilarity(crop(image, box), crop(self.images[-1], box)) < self.similarityThresh:
+        #     return
         history = DetectionHistory(self.nextObjectID)
         history.add(box, crop(image, box), ChangeStatus.ADD, 0)
         self.objects[self.nextObjectID] = history
@@ -178,14 +216,12 @@ class ChangeTracker():
         self.detectionHistory["classes"].append([])
         self.detectionHistory["ids"].append([])
 
-
         if len(boxes) == 0:
-            for objectID in self.disappeared.keys():
-                self.disappeared[objectID] += 1
+            objIds = list(self.disappeared.keys())
+            for objectID in objIds:
+                self.remove(objectID)
 
-                if self.disappeared[objectID] > self.maxDisappeared:
-                    self.deregister(objectID)
-
+            self.images.append(image)
             return self.objects
 
         if len(self.objects) == 0:
@@ -258,6 +294,6 @@ class ChangeTracker():
 
             for col in unusedCols:
                 self.register(boxes[col], image)
-
+        self.images.append(image)
         return self.objects
 
