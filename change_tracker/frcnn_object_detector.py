@@ -35,7 +35,7 @@ def batch_gen(l, n):
         yield l[i: min(i + n, len(l))]
 
 
-def split_output_dicts(outputs, images, score_tresh=.5):
+def split_output_dicts(outputs, images, score_tresh=.9):
     output_splitted = []
     i=0
     for big_dict in outputs:
@@ -51,23 +51,27 @@ def split_output_dicts(outputs, images, score_tresh=.5):
                     continue
             image_np = images[i]
             output_dict["image_np"] = image_np
-            output_dict["detection_scores"] = np.random.uniform(low=0.8, high=1, size=output_dict["detection_scores"].shape)
             output_splitted.append(output_dict)
             i+=1
+    return output_splitted
+
 
 class FRCNN_Object_detector:
     def __init__(self, graph_path, memory_fraction=0.9):
+        print ("detection model")
+
         self.graphPath = graph_path
-        self.tf_config = tf_config = tf.ConfigProto()
-        self.tf_config.gpu_options.per_process_gpu_memory_fraction = memory_fraction
-        od_graph_def = tf.GraphDef()
+        self.tfConfig = tf.ConfigProto()
+        self.tfConfig.gpu_options.allow_growth = True
+        self.od_graph_def = tf.GraphDef()
         with tf.gfile.GFile(graph_path, 'rb') as fid:
             serialized_graph = fid.read()
-            od_graph_def.ParseFromString(serialized_graph)
-            tf.import_graph_def(od_graph_def, name='')
+            self.od_graph_def.ParseFromString(serialized_graph)
+            tf.import_graph_def(self.od_graph_def, name='')
+        print ("done")
     
     def run_inference_for_batch(self, images):
-        with tf.Session(config=tf_config) as sess:
+        with tf.Session(config=self.tfConfig) as sess:
             ops = tf.get_default_graph().get_operations()
             all_tensor_names = {output.name for op in ops for output in op.outputs}
             tensor_dict = {}
@@ -111,7 +115,8 @@ class FRCNN_Object_detector:
         processed = 0
         time_avg = 0
         total_images = len(images)
-        image_batch = batch_gen(images, batch_size)        
+        image_batch = batch_gen(images, batch_size)      
+        total_time = 0  
         for img_b in image_batch:
             t0 = time.time()
             output_dict = self.run_inference_for_batch(img_b)

@@ -124,6 +124,8 @@ class ChangeStatus(Enum):
 
 class SimilarityModel():
     def __init__(self, keras_model_path = None):
+        print ("similarity model")
+        
         input_before = Input(shape=(128, 128, 3))
         input_after = Input(shape=(128, 128, 3))
         mobile = MobileNet(input_shape=(128,128,3), weights=None)
@@ -135,6 +137,7 @@ class SimilarityModel():
 
         self._model = Model([input_before, input_after], distance)
         self._model.load_weights(keras_model_path)
+        print ("done")
 
     def __call__(self, first, second): 
         first = cv2.resize(first, (128, 128)).astype(np.float32)
@@ -204,7 +207,7 @@ class ChangeTracker():
         history = self.objects[objectID]
         history.add(box, crop(image, box), status, score)
 
-        self.disappeared[self.nextObjectID] = 0
+        self.disappeared[objectID] = 0
         self.addDetection(box, status, objectID)
 
     def remove(self, objectID):
