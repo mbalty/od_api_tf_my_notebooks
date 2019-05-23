@@ -109,41 +109,22 @@ class FRCNN_Object_detector:
 
     
     def run_inference_for_images(self, images, batch_size=16, log=False):
+        if log:
+            print ("detect all")
         outputs = []
         progress = 0
-        batch_size = 16
-        processed = 0
-        time_avg = 0
         total_images = len(images)
         image_batch = batch_gen(images, batch_size)      
-        total_time = 0  
         for img_b in image_batch:
-            t0 = time.time()
             output_dict = self.run_inference_for_batch(img_b)
             outputs.append(output_dict)
             
             progress += 1
-            processed += 1
-            t1 = time.time()
 
-            total = t1-t0
-            
-            time_avg = (total_time + total) / processed
-            
-            total_time += total
             if log:
-                log_text = " ".join(["progress ", ":", str(progress / total_images*batch_size), 
-                                    str(progress), str(total_images)])
-                log_text += " | "
-
-                log_text += "".join(["process time ", str(total)])
-                log_text += " | "
-                log_text += "".join([" time passed: ", str(time_avg*processed) ," s, remaining: ", str(time_avg* (total_images/batch_size - progress) ), " s"])
-                    
-
-                print (log_text, end="                                       \r")
-            
-            return split_output_dicts(outputs, images)
+                print (str(min(progress*batch_size, len(images))/len(images))[:5], end="\r")
+        print ("")    
+        return split_output_dicts(outputs, images)
 
     
     

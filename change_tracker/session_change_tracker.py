@@ -19,23 +19,25 @@ def load_image_into_numpy_array(image):
       (im_height, im_width, 3)).astype(np.uint8)
 
 
-def download_images(session_folder):
+def download_images(session_folder, log=False):
+    if log:
         print ("download images")
-        image_paths = sorted([f for f in os.listdir(session_folder) if f.endswith(".jpg")])
-        total_images = len(image_paths)
-        prev_features = None
+    image_paths = sorted([f for f in os.listdir(session_folder) if f.endswith(".jpg")])
+    total_images = len(image_paths)
+    prev_features = None
 
-        images = []
-        for image_fname in image_paths:
-            t0 = time.time()
-            image_path = os.path.join(session_folder, image_fname)
+    images = []
+    for image_fname in image_paths:
+        t0 = time.time()
+        image_path = os.path.join(session_folder, image_fname)
 
-            image = Image.open(image_path)
-            image_np = load_image_into_numpy_array(image)
-            images.append(image_np)
+        image = Image.open(image_path)
+        image_np = load_image_into_numpy_array(image)
+        images.append(image_np)
+        if log:
             print (str(len(images)/len(image_paths))[:5], end="\r")
-        
-        return images
+    print ()
+    return images
 
 class SessionChangeTracker:
     def __init__(self, detection_model_path, similarity_model_path):
@@ -43,10 +45,11 @@ class SessionChangeTracker:
         self.changeTracker = ChangeTracker()
 
     def process_session(self, session_folder, visualize=False, save_results=False, results_folder="/tmp/"):
-        images = download_images(session_folder)
-
+        images = download_images(session_folder, log=True)
+        # print (len(images))
         detections = self.detector.run_inference_for_images(images, log=True)
 
+        # print (len(detections))
         self.changeTracker.reset()
 
         for frame in detections:
